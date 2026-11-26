@@ -252,6 +252,7 @@
                             <span class="block text-[8px] sm:text-[10px] font-bold uppercase text-cyan-600 mb-0.5 truncate">ยอดคงเหลือ</span>
                             <span id="displayStock" class="font-bold text-cyan-700 text-[10px] sm:text-xs block font-mono truncate">—</span>
                             <small id="stockNote" aria-live="polite" class="block text-[9px] leading-tight text-slate-600"></small>
+                            <a hidden id="stockAccount" target="_blank" rel="noopener noreferrer" class="text-[10px] text-blue-700 underline">เปิดผ่านบัญชีสาขา</a>
                         </div>
                     </div>
 
@@ -285,23 +286,11 @@
                 <p id="errorText" class="text-xs sm:text-sm text-red-700 mt-1 max-w-md mx-auto">
                     ไม่พบข้อมูลบาร์โค้ดที่คุณต้องการค้นหา
                 </p>
+                <div hidden id="missingStockLine" class="mt-3 text-sm">ยอดคงเหลือ <b id="missingStock">—</b>
+                    <small aria-live="polite" id="missingStockNote"></small> <a hidden id="missingStockAccount" target="_blank" rel="noopener noreferrer" class="text-[10px] text-blue-700 underline">เปิดผ่านบัญชีสาขา</a></div>
             </div>
 
-            <section id="officialStock" hidden aria-label="ผลจาก Check Price"
-                     class="mt-3 rounded-xl border border-cyan-200 bg-white p-3 shadow-sm">
-                <div class="flex items-center justify-between gap-3 flex-wrap">
-                    <div>
-                        <strong class="text-sm text-slate-800">Check Price · สาขา 1000</strong>
-                        <p id="officialBarcodeLabel" class="text-xs text-slate-600"></p>
-                    </div>
-                    <form id="officialStockForm" method="post" target="_blank"
-                          action="https://checkprice.villamarketjp.com/checkprice/index.aspx?br=1000">
-                        <input type="hidden" name="barcode">
-                        <button type="submit" class="rounded-lg bg-blue-700 px-3 py-2 text-xs font-bold text-white">เปิดผลในแท็บใหม่ ↗</button>
-                    </form>
-                </div>
-                <div id="officialFrame"></div>
-            </section>
+
         </div>
     </main>
 
@@ -603,7 +592,10 @@
                 showResult(foundRow, lookupBarcode);
             } else {
                 showError(rawInput, selectedMode === 'barcode' ? 'บาร์โค้ด' : 'รหัสสินค้า');
-                if (selectedMode === 'barcode') showOfficialStock(rawInput, true);
+                if (selectedMode === 'barcode') {
+                    document.getElementById('missingStockLine').hidden = false;
+                    updateInventory(rawInput, null, true);
+                }
             }
 
             inputEl.value = ''; 
@@ -638,7 +630,7 @@
                 const values = rows[i + 1].cells;
                 if (values.length !== headers.length) continue;
                 const code = normalize(values[codeColumn]);
-                if (!/^\d+$/.test(code) || code.padStart(7, '0') !== expectedCode) continue;
+                if (!/^\d+$/.test(code) || (expectedCode !== null && code.padStart(7, '0') !== expectedCode)) continue;
                 const stock = normalize(values[quantityColumn]);
                 if (!/^[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/.test(stock)) continue;
                 const period = normalize(headers[quantityColumn]).match(/\d{1,2}\s*\/\s*\d{4}/);
@@ -648,79 +640,127 @@
             return matches[0];
         }
 
+        // Paste the organization's Apps Script /exec URL here before uploading to GitHub Pages.
+        const STOCK_WEB_APP_URL = '';
+        const CHECK_PRICE_URL = 'https://checkprice.villamarketjp.com/checkprice/index.aspx?br=1000';
+        let bridgeReady;
         let inventoryController;
-        let useFrameUntil = 0;
-        const validBarcode = value => value !== '-' && /^[A-Za-z0-9._-]{1,64}$/.test(value);
 
-        function clearOfficialStock() {
-            document.getElementById('officialStock').hidden = true;
-            document.getElementById('officialFrame').replaceChildren();
-            document.getElementById('officialStockForm').elements.barcode.value = '';
-        }
-
-        function showOfficialStock(barcode, embed) {
-            if (!validBarcode(barcode)) return;
-            const form = document.getElementById('officialStockForm');
-            form.elements.barcode.value = barcode;
-            document.getElementById('officialBarcodeLabel').textContent = 'บาร์โค้ด ' + barcode;
-            document.getElementById('officialStock').hidden = false;
-            if (!embed) return;
-
-            // A normal form navigation can display the official result without reading its contents.
-            const frame = document.createElement('iframe');
-            frame.title = 'ผล Check Price สำหรับบาร์โค้ด ' + barcode;
-            frame.name = 'checkprice_' + stockRequestNumber;
-            frame.setAttribute('sandbox', '');
-            frame.className = 'mt-2 w-full rounded border border-slate-200';
-            frame.style.height = '19rem';
-            document.getElementById('officialFrame').replaceChildren(frame);
-            form.target = frame.name;
-            try {
-                form.submit();
-            } finally {
-                form.target = '_blank';
+        function openStockBridge() {
+            if (bridgeReady) return bridgeReady;
+            if (!/^https:\/\/script\.google\.com\/(?:a\/macros\/[A-Za-z0-9.-]+|macros)\/s\/[A-Za-z0-9_-]+\/exec$/.test(STOCK_WEB_APP_URL)) {
+                throw new Error('ตรวจสอบลิงก์ /exec ของตัวเชื่อม');
             }
+            bridgeReady = new Promise((resolve, reject) => {
+                const session = crypto.randomUUID();
+                const frame = document.createElement('iframe');
+                frame.hidden = true;
+                frame.title = 'เชื่อมต่อยอดคงเหลือสาขา 1000';
+                frame.src = STOCK_WEB_APP_URL + '?view=stock&session=' + session;
+                function ready(event) {
+                    const message = event.data;
+                    if (message?.kind !== 's33-stock-ready' || message.session !== session) return;
+                    if (!/^https:\/\/(?:script\.google\.com|(?:[a-z0-9-]+-script|script)\.googleusercontent\.com)$/.test(event.origin)) return;
+                    // Apps Script wraps its HTML in an inner frame. Bind this connection to our own iframe.
+                    let source = event.source;
+                    while (source && source !== frame.contentWindow && source !== source.parent) source = source.parent;
+                    if (source !== frame.contentWindow) return;
+                    clearTimeout(timer);
+                    window.removeEventListener('message', ready);
+                    resolve({source: event.source, origin: event.origin, session});
+                }
+                const timer = setTimeout(() => {
+                    window.removeEventListener('message', ready);
+                    frame.remove();
+                    bridgeReady = null;
+                    reject(new Error('เปิดตัวเชื่อมด้วยบัญชี Google ของสาขาก่อน'));
+                }, 12000);
+                window.addEventListener('message', ready);
+                document.body.append(frame);
+            });
+            return bridgeReady;
         }
 
-        async function updateInventory(barcode, productCode) {
+        async function loadStockPage(barcode, signal) {
+            if (window.google?.script?.run) {
+                return new Promise((resolve, reject) =>
+                    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).fetchStockPage(barcode)
+                );
+            }
+            if (!STOCK_WEB_APP_URL) {
+                const response = await fetch(CHECK_PRICE_URL, {
+                    method: 'POST', body: new URLSearchParams({barcode}), credentials: 'omit',
+                    cache: 'no-store', redirect: 'error', signal
+                });
+                if (!response.ok) throw new Error('Check Price ตอบกลับ HTTP ' + response.status);
+                return response.text();
+            }
+            const bridge = await openStockBridge();
+            signal.throwIfAborted();
+            return new Promise((resolve, reject) => {
+                const channel = new MessageChannel();
+                function finish() {
+                    channel.port1.close();
+                    signal.removeEventListener('abort', cancel);
+                }
+                function cancel() {
+                    finish();
+                    reject(new Error('หมดเวลารอ Check Price'));
+                }
+                channel.port1.onmessage = ({data}) => {
+                    finish();
+                    if (typeof data?.html === 'string') resolve(data.html);
+                    else reject(new Error(data?.error || 'เชื่อมต่อ Check Price ไม่สำเร็จ'));
+                };
+                signal.addEventListener('abort', cancel, {once: true});
+                try {
+                    bridge.source.postMessage({kind: 's33-stock-read', session: bridge.session, barcode},
+                        bridge.origin, [channel.port2]);
+                } catch (error) {
+                    finish();
+                    reject(error);
+                }
+            });
+        }
+
+        async function updateInventory(barcode, productCode, missing = false) {
             const requestNumber = ++stockRequestNumber;
             inventoryController?.abort();
-            clearOfficialStock();
-            const quantity = document.getElementById('displayStock');
-            const note = document.getElementById('stockNote');
+            const quantity = document.getElementById(missing ? 'missingStock' : 'displayStock');
+            const note = document.getElementById(missing ? 'missingStockNote' : 'stockNote');
+            const accountLink = document.getElementById(missing ? 'missingStockAccount' : 'stockAccount');
+            accountLink.hidden = true;
             quantity.textContent = '—';
             note.removeAttribute('title');
-            if (!validBarcode(barcode)) {
+            if (!/^[A-Za-z0-9._-]{1,64}$/.test(barcode) || barcode === '-') {
                 note.textContent = 'ไม่มีบาร์โค้ดสำหรับค้นหา';
-                return;
-            }
-            if (Date.now() < useFrameUntil) {
-                note.textContent = 'ดูผล Check Price ด้านล่าง';
-                showOfficialStock(barcode, true);
                 return;
             }
             note.textContent = 'กำลังเช็กสาขา 1000…';
             const controller = new AbortController();
             inventoryController = controller;
-            const timer = setTimeout(() => controller.abort(), 9000);
+            let timer;
             try {
-                const response = await fetch(document.getElementById('officialStockForm').action, {
-                    method: 'POST', body: new URLSearchParams({barcode}),
-                    credentials: 'omit', redirect: 'error', cache: 'no-store', signal: controller.signal
+                const timeout = new Promise((_, reject) => {
+                    timer = setTimeout(() => {
+                        controller.abort();
+                        reject(new Error('หมดเวลารอ Check Price'));
+                    }, 25000);
                 });
-                if (!response.ok) throw new Error('Check Price ตอบกลับ HTTP ' + response.status);
-                const html = await response.text();
+                const html = await Promise.race([loadStockPage(barcode, controller.signal), timeout]);
                 if (requestNumber !== stockRequestNumber) return;
                 const result = readInventory(html, barcode, productCode);
                 quantity.textContent = result.stock;
                 note.textContent = ['Check Price 1000', result.period].filter(Boolean).join(' · ');
             } catch (error) {
                 if (requestNumber !== stockRequestNumber) return;
-                const embed = error instanceof TypeError || error.name === 'AbortError';
-                if (error instanceof TypeError) useFrameUntil = Date.now() + 60000;
-                note.textContent = embed ? 'ดูผล Check Price ด้านล่าง' : 'ตรวจสอบยอดไม่ได้';
-                note.title = error.message;
-                showOfficialStock(barcode, embed);
+                note.textContent = (!STOCK_WEB_APP_URL && !window.google?.script?.run && error instanceof TypeError)
+                    ? 'เชื่อมต่อไม่ได้ · ตรวจการตั้งค่าตัวเชื่อม' : 'ตรวจสอบยอดไม่ได้';
+                note.title = error?.message || 'เชื่อมต่อ Check Price ไม่สำเร็จ';
+                if (!window.google?.script?.run && /^https:\/\/script\.google\.com\//.test(STOCK_WEB_APP_URL)) {
+                    accountLink.href = STOCK_WEB_APP_URL;
+                    accountLink.hidden = false;
+                }
             } finally {
                 clearTimeout(timer);
                 if (inventoryController === controller) inventoryController = null;
@@ -772,7 +812,7 @@
             document.getElementById('displayMaster').textContent = row[COL_INDEX.MASTER] || "-";
             document.getElementById('displayStatus').textContent = row[COL_INDEX.STATUS_ITEM] || "-";
 
-            findImageInDrive(pCode);
+            findImageInDrive(pCode, stockRequestNumber);
         }
 
         function showError(original, type) {
@@ -786,7 +826,7 @@
         function resetDisplay() {
             stockRequestNumber++;
             inventoryController?.abort();
-            clearOfficialStock();
+            document.getElementById('missingStockLine').hidden = true;
             document.getElementById('resultContainer').classList.add('hidden');
             document.getElementById('errorContainer').classList.add('hidden');
             document.getElementById('productImage').classList.add('hidden');
@@ -794,7 +834,7 @@
             document.getElementById('imageError').classList.add('hidden');
         }
 
-        async function findImageInDrive(productCode) {
+        async function findImageInDrive(productCode, requestNumber) {
             const imageEl = document.getElementById('productImage');
             const loader = document.getElementById('imageLoader');
             const errorEl = document.getElementById('imageError');
@@ -807,6 +847,7 @@
             try {
                 const response = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&key=${API_KEY}&fields=files(id)`);
                 const data = await response.json();
+                if (requestNumber !== stockRequestNumber) return;
                 
                 loader.classList.add('hidden');
                 
@@ -817,6 +858,7 @@
                     errorEl.classList.remove('hidden');
                 }
             } catch (error) { 
+                if (requestNumber !== stockRequestNumber) return;
                 console.error("Image fetch error:", error);
                 loader.classList.add('hidden'); 
                 errorEl.classList.remove('hidden');
